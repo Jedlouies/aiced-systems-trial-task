@@ -1,22 +1,36 @@
-import { describe, it } from "vitest";
-// import { afterAll, beforeAll, expect } from "vitest";
-// import { asUser, asOwner, pool, ALICE, BOB, ACME, GLOBEX } from "./helpers";
-
-// TODO: prove your `notes` feature is tenant-isolated.
-//
-// Two things to know about the harness (see tests/helpers.ts):
-//   - asUser(userId, async (q) => { ... }) runs as a signed-in user with RLS
-//     enforced, then ROLLS BACK — great for assertions, but it can't leave data
-//     behind for another query to see.
-//   - asOwner(sql, params) runs as the DB owner and BYPASSES RLS. Use it in
-//     beforeAll to seed committed notes for BOTH groups, and in afterAll to
-//     clean up (await asOwner("delete from notes")).
-//
-// At minimum, prove a user can see/insert their OWN group's notes but NOT
-// another group's. Seeded users: ALICE = Acme, BOB = Globex, CAROL = both.
-// Close the pool in afterAll: await pool.end().
+import { describe, it, beforeAll, afterAll, expect } from "vitest";
+import { asUser, asOwner, pool, ALICE, BOB, CAROL, ACME, GLOBEX } from "./helpers";
 
 describe("notes", () => {
-  it.todo("a member sees only their own group's notes");
-  it.todo("a user cannot insert a note into a group they don't belong to");
+  beforeAll(async () => {
+    await asOwner("delete from notes");
+    await asOwner(`
+      insert into notes (group_id, author_id, body) values 
+      ($1, $2, 'Acme private note'),
+      ($3, $4, 'Globex private note')
+    `, [ACME, ALICE, GLOBEX, BOB]);
+  });
+
+  afterAll(async () => {
+    await asOwner("delete from notes");
+    await pool.end();
+  });
+
+  it("a member sees only their own group's notes", async () => {
+    const aliceNotes = await asUser(ALICE, async (q) => (await q("select body from notes")).rows);
+    expect(aliceNotes).toHaveLength(1);
+    expect(aliceNotes[0].body).toBe("Acme private note");
+
+    const bobNotes = await asUser(BOB, async (q) => (await q("select body from notes")).rows);
+    expect(bobNotes).toHaveLength(1);
+    expect(bobNotes[0].body).toBe("Globex private note");
+  });
+
+  it("a user cannot insert a note into a group they don't belong to", async () => {
+    const illegalInsert = asUser(ALICE, async (q) => {
+      await q("insert into notes (group_id, author_id, body) values ($1, $2, 'Infiltrator body')", [GLOBEX, ALICE]);
+    });
+
+    await expect(illegalInsert).rejects.toThrow();
+  });
 });
